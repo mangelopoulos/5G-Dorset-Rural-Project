@@ -36,23 +36,24 @@ struct AxisData
 typedef struct
 {
   // Device-related
-  int dev_id;
-  int sensor_type;
-  int sample_rate_ms;
-  int battery;
-  int rssi;
-
+  uint16_t dev_id;
+  uint8_t sensor_type;
+  uint16_t sample_rate_sec;
+  uint16_t battery;
+  uint16_t rssi;
+  
   // Measurements
+  uint8_t sensor_error;
   AxisData axis_data;
-  int lidar_dist;
+  uint16_t lidar_dist;
 
 } Lora_sensor_t;
 
-
-
-
+// Constants and macro definitions
+#define SENSOR_TYPE_ACCELEROMETER 0
+#define SENSOR_TYPE_LIDAR         1
 #define LORA_FREQUENCY 868E6
-
+#define MOSFET_PIN 7
 #define RESOLUTION 10
 #define MAG_RESOLUTION 10
 
@@ -81,45 +82,49 @@ int mag_readingValuesZ[MAG_RESOLUTION];
 // ****************************** Setup **********************************
 // ***********************************************************************
 
-void setup_debug()
-{
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(6, OUTPUT);
-}
-
 void setup() 
 { 
   g_sensor.dev_id = DEVICE_ID;
-  // g_sensor.sensor_type = TODO;
-  g_sensor.sample_rate_ms = SAMPLE_RATE_DEFAULT_MS;
+  g_sensor.sample_rate_sec = SAMPLE_RATE_DEFAULT_SEC;
+
+#if ALT_IMU_10_V5_EN
+  g_sensor.sensor_type = SENSOR_TYPE_ACCELEROMETER;
+#elif TF_MINI_LIDAR_EN
+  g_sensor.sensor_type = SENSOR_TYPE_LIDAR;
+#endif
 
   // GPIO Initializations
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(10, OUTPUT); // DEBUG: For PPK2 D0
-  
-  // Test MOSFET
-  pinMode(6, OUTPUT);
-  
+  pinMode(10, OUTPUT);    // DEBUG: For PPK2 D0
+  pinMode(LED_BUILTIN, OUTPUT);    // Led init
+  pinMode(MOSFET_PIN, OUTPUT);     // MOSFET init
+  digitalWrite(MOSFET_PIN, HIGH);  // MOSFET turn off
 
-  digitalWrite(LED_BUILTIN, LOW);
   for (int i = 0; i < 15; i++) 
   {
-    // TODO
+    // TODO: Update for less battery consumption
     // pinMode(i, INPUT_PULLUP);
   }
 
 #if BATTERY_MONITOR
-  // Set the ADC to the default Analog Reference of 3.3V and 12-bit resolution
-  analogReference(AR_INTERNAL1V65); // AR_DEFAULT
+  // Set the ADC reference and resolution
+  analogReference(AR_INTERNAL1V65); // AR_DEFAULT, AR_INTERNAL1V65, AR_INTERNAL2V23
   analogReadResolution(12);
+  // Perform a few measurements after changing the reference to stabilize ADC
+  analogRead(A0);
+  analogRead(A0);
+  analogRead(A0);
+  analogRead(A0);
+  analogRead(A0);
 #endif
 
   // Enable watchdog for library initializations
-  //Watchdog.enable(8000);
+  Watchdog.enable(8000);
 
   // Library Initializations
   Wire.begin();
-  Serial.begin(9600);
+#if DEBUG_MODE
+  Serial1.begin(9600);
+#endif
 
 #if LORA_EN
   LORA_setup();
@@ -127,7 +132,13 @@ void setup()
 #endif
 
 #if DEBUG_MODE
-  Serial.println("Initializations completed!");
+  Serial1.println("Initializations completed!");
+  Serial1.print("Device ID: ");
+  Serial1.print(g_sensor.dev_id);
+  Serial1.print(", Sensor Type: ");
+  Serial1.print(g_sensor.sensor_type);
+  Serial1.print(", Sample Rate: ");
+  Serial1.println(g_sensor.sample_rate_sec);
 #endif
 }
 
@@ -137,28 +148,27 @@ void setup()
 
 void loop_debug() 
 {  
-  digitalWrite(6, LOW);
-  digitalWrite(LED_BUILTIN, LOW);
-  Serial.println("LOW");
-  delay(10000);
-  digitalWrite(6, HIGH);
-  digitalWrite(LED_BUILTIN, HIGH);
-  Serial.println("HIGH");
-  delay(10000);
+  Watchdog.disable(); 
+
+  digitalWrite(MOSFET_PIN, HIGH);
+  Serial1.println("HIGH");
+  delay(3000);
+
+  digitalWrite(MOSFET_PIN, HIGH);
+  Serial1.println("HIGH");
+  delay(3000);
 }
 
 void loop() 
 {
 
-  // DEBUG: For PPK2 D0
-  digitalWrite(10, LOW); 
-
 #if DEBUG_MODE
+  // Serial1.println("Loop");
   digitalWrite(LED_BUILTIN, HIGH);
 #endif
 
   // Enable watchdog
-  //Watchdog.enable(8000);
+  Watchdog.enable(8000);
 
   // *************** 1. Measurements **************  
 
@@ -169,7 +179,10 @@ void loop()
 
 #if TF_MINI_LIDAR_EN
   // Get TF mini Lidar measurement
+  digitalWrite(MOSFET_PIN, LOW);
+  delay(100);
   TFMini_measurement();
+  digitalWrite(MOSFET_PIN, HIGH);
 #endif
 
 #if ALT_IMU_10_V5_EN
@@ -181,26 +194,18 @@ void loop()
   // *************** 2. LoRa packet ***************
 
 #if LORA_EN
-  static int a = 0;
-  if (a)
-  {
-    LORA_wake_up();
-    LORA_setup();
-    LORA_join();
-  }
-  a++;
-
+  // Wake up LoRa module
+  LORA_wake_up();
   // Transmit packet
   LORA_transmission();
 #endif
 
   // *************** 3. Sleep *********************
-  
-  // Disable watchdog
-  //Watchdog.disable(); // Watchdog.reset();
 
+#if LORA_EN
   // Set LoRa module to sleep mode
   LORA_sleep_mode();
+#endif
 
 #if ALT_IMU_10_V5_EN
   ALTIMU10_sleep();
@@ -210,15 +215,16 @@ void loop()
   digitalWrite(LED_BUILTIN, LOW);
 #endif
 
-// DEBUG: For PPK2 D0
-digitalWrite(10, HIGH); 
+  // Reset/Disable watchdog
+  Watchdog.disable(); 
+  //Watchdog.reset();
 
 #if SLEEP_ENABLED
   // Go to deep sleep mode
-  LowPower.deepSleep(g_sensor.sample_rate_ms);
+  LowPower.deepSleep(g_sensor.sample_rate_sec * 1000);
 #else
   // Wait for some time
-  delay(g_sensor.sample_rate_ms);
+  delay(g_sensor.sample_rate_sec * 1000);
 #endif
 
 }
@@ -229,17 +235,19 @@ digitalWrite(10, HIGH);
 
 void Battery_monitor()
 {
+  
+  // TODO: Update the entire function
+
   float voltValue, battery_volt, battery_volt_norm, battery_percentage;
   float minimal_voltage = 1800;
   float battery_voltage_ref = 1.65;
 
   // Reading from the Battery Pin
   voltValue = analogRead(A0);
-
+  
   // Convert ADC raw to mV
 	// Vcc = ADC * (Vref / 1024) * (1 + R1/R2)
 	battery_volt = (voltValue * battery_voltage_ref / 4095.0) * (1.0 + (680000.0/470000.0)) * 1000;
-
 
   // Calculate current voltage level
   battery_volt_norm = ((voltValue * battery_voltage_ref) / 4095) * 1000;
@@ -247,14 +255,19 @@ void Battery_monitor()
   // Battery level expressed in percentage
   battery_percentage = 100*abs((battery_volt - minimal_voltage) / ((battery_voltage_ref * 1000) - minimal_voltage));
 
+  // TODO: Update with uint16 mV
+  g_sensor.battery = voltValue;
+
 #if DEBUG_MODE
-  Serial.print(F("Battery: "));
-  Serial.print(battery_volt);
-  Serial.print(F(" mV, "));
-  Serial.print(battery_volt_norm);
-  Serial.print(F(" mV, "));
-  Serial.print(battery_percentage);
-  Serial.println(F("%"));
+  Serial1.print(F("Battery: "));
+  Serial1.print(voltValue);
+  Serial1.print(F(" ADC, "));
+  Serial1.print(battery_volt);
+  Serial1.print(F(" mV, "));
+  Serial1.print(battery_volt_norm);
+  Serial1.print(F(" mV, "));
+  Serial1.print(battery_percentage);
+  Serial1.println(F("%"));
 #endif
 
 }
@@ -291,8 +304,13 @@ void TFMini_measurement()
 
   if (res)
   {
-    // TODO: Add to packet
+    g_sensor.sensor_error = 0;
     g_sensor.lidar_dist = distance;
+  }
+  else
+  {
+    g_sensor.sensor_error = 1;
+    g_sensor.lidar_dist = 0;
   }
 }
 
@@ -314,19 +332,29 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
   *strength = 0;
   *range_type = 0;
   
+  Serial1.println("A");
+
   Wire.beginTransmission(dev_address);
   Wire.write(0x01); // MSB
   Wire.write(0x02); // LSB
   Wire.write(7);    // Data length: 7 bytes for distance data
 
-  if (Wire.endTransmission(false) != 0) 
+
+  Serial1.println("B");
+
+  int res = Wire.endTransmission(true); // TODO: false
+
+  if (res != 0) 
   {
 #if DEBUG_MODE
-          Serial.println("No sensor");
+          Serial1.print("Error: No sensor ");
+          Serial1.println(res);
 #endif
     // Sensor did not ACK
     return (false);
   }
+
+  Serial1.println("C");
 
   // Request 7 bytes
   Wire.requestFrom(dev_address, (uint8_t)7); 
@@ -342,15 +370,18 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
         //Trigger done
         if (incoming == 0x00)
         {
+
+          // NOTE: This is not invalid data. It's the previous frame
+
 #if DEBUG_MODE
-          Serial.println("Data invalid");
+          Serial1.println("Data invalid");
 #endif
           valid_data = false;
         }
         else if (incoming == 0x01)
         {
 #if DEBUG_MODE
-          Serial.print("Data valid:     ");
+          Serial1.print("Data valid:     ");
 #endif
           valid_data = true;
         }
@@ -380,14 +411,14 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
 #if DEBUG_MODE
     if (valid_data == true) 
     {
-      Serial.print("\tDist[");
-      Serial.print(*distance);
-      Serial.print("]\tstrength[");
-      Serial.print(*strength);
-      Serial.print("]\tmode[");
-      Serial.print(*range_type);
-      Serial.print("]");
-      Serial.println();
+      Serial1.print("\tDist[");
+      Serial1.print(*distance);
+      Serial1.print("]\tstrength[");
+      Serial1.print(*strength);
+      Serial1.print("]\tmode[");
+      Serial1.print(*range_type);
+      Serial1.print("]");
+      Serial1.println();
     }
 #endif
 
@@ -396,7 +427,7 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
   {
 
 #if DEBUG_MODE
-    Serial.println("No wire data avail");
+    Serial1.println("No wire data avail");
 #endif
     valid_data = false;
   }
@@ -413,12 +444,20 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
 
 #if ALT_IMU_10_V5_EN
 
+/*!
+* @brief Module initialization
+*
+*/
 void ALTIMU10_init()
 {
+  g_sensor.sensor_error = 0;
+
   if(!imu.init()) 
   {
+    g_sensor.sensor_error = 1;
+
 #if DEBUG_MODE
-    Serial.println("Error: IMU failed to initialize");
+    Serial1.println("Error: IMU failed to initialize");
 #endif
   }
   else
@@ -432,10 +471,15 @@ void ALTIMU10_init()
     imu.writeReg(LSM6::CTRL1_XL, 0b10000100);
   }
 
+
+  // NOTE: Magnetometer is disabled. N/A 
+
   if(!mag.init()) 
   {
+    g_sensor.sensor_error = 1;
+
 #if DEBUG_MODE
-    Serial.println("Error: Magnetometer failed to initialize");
+    Serial1.println("Error: Magnetometer failed to initialize");
 #endif
   }
   else
@@ -443,10 +487,14 @@ void ALTIMU10_init()
     mag.enableDefault();
   }
 
+
+
   if(!bar.init()) 
   {
+    g_sensor.sensor_error = 1;
+
 #if DEBUG_MODE
-    Serial.println("Error: Barometer failed to initialize");
+    Serial1.println("Error: Barometer failed to initialize");
 #endif
   }
   else
@@ -454,18 +502,68 @@ void ALTIMU10_init()
     bar.enableDefault();
   }
 
+
 }
 
-
+/*!
+* @brief Accelerometer measurement
+*
+*/
 void ALTIMU10_measurement()
 {
-  imu.read();
-  mag.read();
+  
+  // TODO: Clear measurement in case of error !!!
 
-  printSensorData();
+  imu.read();
+  //mag.read();
+  
+  AxisData accelData = calibreAccel(imu.a.x, imu.a.y, imu.a.z);
+  AxisData axisDegree = calculateDegree(accelData);
+  // AxisData magData = calibreMag(mag.m.x, mag.m.y, mag.m.z);
+
+  g_sensor.axis_data.x = accelData.x;
+  g_sensor.axis_data.y = accelData.y;
+  g_sensor.axis_data.z = accelData.z;
+
+#if DEBUG_MODE
+    Serial1.print("Cal_X: ");
+    Serial1.print(accelData.x);
+    Serial1.print(SEP);
+    Serial1.print("Cal_Y: ");
+    Serial1.print(accelData.y);
+    Serial1.print(SEP);
+    Serial1.print("Cal_Z: ");
+    Serial1.print(accelData.z);
+    Serial1.print(SEP);
+
+    Serial1.print("Deg_X: ");
+    Serial1.print(axisDegree.x);
+    Serial1.print(SEP);
+    Serial1.print("Deg_Y: ");
+    Serial1.print(axisDegree.y);
+    Serial1.print(SEP);
+    Serial1.print("Deg_Z: ");
+    Serial1.print(axisDegree.z);
+    Serial1.print(SEP);
+
+    // Serial1.print("Mag_X: ");
+    // Serial1.print(magData.x);
+    // Serial1.print(SEP);
+    // Serial1.print("Mag_Y: ");
+    // Serial1.print(magData.y);
+    // Serial1.print(SEP);
+    // Serial1.print("Mag_Z :");
+    // Serial1.print(magData.z);
+    
+    Serial1.println();
+#endif
+
 }
 
-
+/*!
+* @brief Accelerometer sleep mode
+*
+*/
 void ALTIMU10_sleep()
 {
   // uint8_t readReg(uint8_t reg);
@@ -477,68 +575,10 @@ void ALTIMU10_sleep()
   bar.writeReg(LPS::CTRL_REG1, 0x30);
 }
 
-void printSensorData() 
-{
-    //    char report[120];
-//
-//    snprintf_P(report, sizeof(report),
-//               PSTR("A: %6d %6d %6d    M: %6d %6d %6d    G: %6d %6d %6d"),
-//               imu.a.x, imu.a.y, imu.a.z,
-//               mag.m.x, mag.m.y, mag.m.z,
-//               imu.g.x, imu.g.y, imu.g.z);
-//    Serial.println(report);
-
-
-    AxisData accelData = calibreAccel(imu.a.x, imu.a.y, imu.a.z);
-    AxisData axisDegree = calculateDegree(accelData);
-    AxisData magData = calibreMag(mag.m.x, mag.m.y, mag.m.z);
-
-    g_sensor.axis_data.x = accelData.x;
-    g_sensor.axis_data.y = accelData.y;
-    g_sensor.axis_data.z = accelData.z;
-
-#if DEBUG_MODE
-    Serial.print("Cal_X: ");
-    Serial.print(accelData.x);
-    Serial.print(SEP);
-    Serial.print("Cal_Y: ");
-    Serial.print(accelData.y);
-    Serial.print(SEP);
-    Serial.print("Cal_Z: ");
-    Serial.print(accelData.z);
-    Serial.print(SEP);
-
-    Serial.print("Deg_X: ");
-    Serial.print(axisDegree.x);
-    Serial.print(SEP);
-    Serial.print("Deg_Y: ");
-    Serial.print(axisDegree.y);
-    Serial.print(SEP);
-    Serial.print("Deg_Z: ");
-    Serial.print(axisDegree.z);
-    Serial.print(SEP);
-
-    Serial.print("Mag_X: ");
-    Serial.print(magData.x);
-    Serial.print(SEP);
-    Serial.print("Mag_Y: ");
-    Serial.print(magData.y);
-    Serial.print(SEP);
-    Serial.print("Mag_Z :");
-    Serial.print(magData.z);
-    
-    Serial.println();
-#endif
-}
-
-
-/// Eksenlere gore accelerometerı kalibrasyon yapıp
-/// stabil sonuc dondurur.
-/// Parametre olarak ham sensörden okundan veriler verilir
-/// \param aX
-/// \param aY
-/// \param aZ
-/// \return AxisData _.x, _,y, _,z formatında
+/*!
+* @brief Calibrate accelerometer measurement
+*
+*/
 AxisData calibreAccel(int aX, int aY, int aZ) 
 {
 
@@ -570,10 +610,10 @@ AxisData calibreAccel(int aX, int aY, int aZ)
     return result;
 }
 
-///  Accelerometerdan okunan sensör verilerini
-///  dereceye dönüştürür.
-/// \param data : raw olarak verilen sensör bilgileri
-/// \return _.x, _.y, _.z şeklinde derece döndürür
+/*!
+* @brief Calibrate gyro measurement
+*
+*/
 AxisData calculateDegree(AxisData data)
 {
     int degreeResolution = 22;
@@ -585,12 +625,9 @@ AxisData calculateDegree(AxisData data)
     return degree;
 }
 
-/// Eksenelere göre magnetometerı kalibre edip
-/// stabil sonuc dondurur
-/// \param magX
-/// \param magY
-/// \param magZ
-/// \return
+/*!
+* @brief Calibrate magnetometer measurement
+*/
 AxisData calibreMag(int magX, int magY, int magZ) 
 {
 
@@ -641,18 +678,33 @@ void LORA_setup()
   if (!modem.begin(EU868)) 
   {
 #if DEBUG_MODE
-    Serial.println("Error: LoRa Lib init failed!");
+    Serial1.println("Error: LoRa Lib init failed!");
 #endif
     // NOTE: Wait for watchdog reset here in case of LoRa module failure
     while (1);
   }
   else
   {
+
+  // Set data rate to 6
+  if(!modem.dataRate(6))
+  {
 #if DEBUG_MODE
-  Serial.print("LoRa module version: ");
-  Serial.print(modem.version());
-  Serial.print(" Device EUI: ");
-  Serial.println(modem.deviceEUI());
+    Serial1.println("Error: LoRa data rate failed!");
+#endif
+  }
+    
+#if DEBUG_MODE
+  Serial1.print("LoRa module version: ");
+  Serial1.print(modem.version());
+  Serial1.print(" Device EUI: ");
+  Serial1.print(modem.deviceEUI());
+  Serial1.print(" ADR: ");
+  Serial1.print(modem.getADR());
+  Serial1.print(" DR: ");
+  Serial1.print(modem.getDataRate());
+  Serial1.println();
+  
 #endif
   }
 }
@@ -668,13 +720,13 @@ void LORA_join()
   if (!connected) 
   {
 #if DEBUG_MODE
-    Serial.println("Something went wrong; are you indoor? Move near a window and retry");
+    Serial1.println("Error: LoRa Join failed!");
 #endif
   }
 
   // Set poll interval to 60 secs.
   modem.minPollInterval(60); // TODO: To be checked or delete
-  // NOTE: independent of this setting, the modem will
+  // Lib NOTE: independent of this setting, the modem will
   // not allow sending more than one message every 2 minutes,
   // this is enforced by firmware and can not be changed.
 }
@@ -688,65 +740,76 @@ void LORA_transmission()
   
   static int counter = 0;
   int err = 0;
-  uint16_t test = 40000;
+  
+  const int BUF_SIZE = 16; 
+  byte buffer_lora[BUF_SIZE] = {0};
+
+  // Clear buffer
+  for (int i = 0; i < BUF_SIZE; i++) 
+  {
+    buffer_lora[i] = 0;
+  }
+
+  // Copy globals to the LoRa buffer
+  buffer_lora[0] = g_sensor.dev_id >> 8;
+  buffer_lora[1] = g_sensor.dev_id;
+  buffer_lora[2] = g_sensor.sensor_type;
+  buffer_lora[3] = g_sensor.sample_rate_sec >> 8;
+  buffer_lora[4] = g_sensor.sample_rate_sec;
+  buffer_lora[5] = g_sensor.battery >> 8;
+  buffer_lora[6] = g_sensor.battery;
+  buffer_lora[7] = g_sensor.rssi >> 8;
+  buffer_lora[8] = g_sensor.rssi;
 
 #if ALT_IMU_10_V5_EN
 
-  const int BUF_SIZE = 8;
-  byte buffer_lora[BUF_SIZE];
-  
-  memcpy(&buffer_lora[0], &g_sensor.axis_data.x, sizeof(g_sensor.axis_data.x));
-  memcpy(&buffer_lora[2], &g_sensor.axis_data.y, sizeof(g_sensor.axis_data.y));
-  memcpy(&buffer_lora[4], &g_sensor.axis_data.z, sizeof(g_sensor.axis_data.z));
-
-  // buffer_lora[0] = g_sensor.axis_data.x >> 8;
-  // buffer_lora[1] = g_sensor.axis_data.x;
-  // buffer_lora[2] = g_sensor.axis_data.y >> 8;
-  // buffer_lora[3] = g_sensor.axis_data.y;
-  // buffer_lora[4] = g_sensor.axis_data.z >> 8;
-  // buffer_lora[5] = g_sensor.axis_data.z;
-  buffer_lora[6] = 0;
-  buffer_lora[7] = 0;
+  // Copy sensor measurements
+  buffer_lora[9] = g_sensor.axis_data.x >> 8;
+  buffer_lora[10] = g_sensor.axis_data.x;
+  buffer_lora[11] = g_sensor.axis_data.y >> 8;
+  buffer_lora[12] = g_sensor.axis_data.y;
+  buffer_lora[13] = g_sensor.axis_data.z >> 8;
+  buffer_lora[14] = g_sensor.axis_data.z;
+  buffer_lora[15] = g_sensor.sensor_error;
 
 #elif TF_MINI_LIDAR_EN
 
-  const int BUF_SIZE = 2;
-  byte buffer_lora[BUF_SIZE];
-  buffer_lora[0] = g_sensor.lidar_dist >> 8;
-  buffer_lora[1] = g_sensor.lidar_dist;
-
-#else
-
-  const int BUF_SIZE = 2;
-  byte buffer_lora[BUF_SIZE];
-
-  buffer_lora[0] = test >> 8;
-  buffer_lora[1] = test;
+  // Copy sensor measurements
+  buffer_lora[9] = g_sensor.lidar_dist >> 8;
+  buffer_lora[10] = g_sensor.lidar_dist;
+  buffer_lora[11] = g_sensor.sensor_error;
 
 #endif
 
   // Transmit a packet
   modem.beginPacket();
-  modem.write(buffer_lora, 2); // BUF_SIZE
+  modem.write(buffer_lora, BUF_SIZE); 
   //modem.print(counter);
   err = modem.endPacket(true);
 
   if (err > 0) 
   {
 #if DEBUG_MODE
-    Serial.println("LoRa Tx: OK");
+    // TESTING
+    for (int i = 0; i < sizeof(buffer_lora); i++) 
+    {
+      //Serial1.print(buffer_lora[i], DEC);
+      //Serial1.print(" ");
+    }
+    Serial1.println("LoRa Tx: OK");
 #endif
   } 
   else 
   {
 #if DEBUG_MODE
-    Serial.print("LoRa Tx: Error ");
-    Serial.println(err);
+    Serial1.print("LoRa Tx: Error ");
+    Serial1.println(err);
 #endif
   }
+  
+  // TODO: Implement downlink
 
-  // TODO: Why so big dely? To be checked.
-  delay(1000);
+  delay(100); // 1000
 
   // Check for downlink
   if (!modem.available()) 
@@ -764,15 +827,15 @@ void LORA_transmission()
   }
 
 #if DEBUG_MODE
-  Serial.print("Received: ");
+  Serial1.print("Received: ");
 
   for (unsigned int j = 0; j < i; j++) 
   {
-    Serial.print(rcv[j] >> 4, HEX);
-    Serial.print(rcv[j] & 0xF, HEX);
-    Serial.print(" ");
+    Serial1.print(rcv[j] >> 4, HEX);
+    Serial1.print(rcv[j] & 0xF, HEX);
+    Serial1.print(" ");
   }
-  Serial.println();
+  Serial1.println();
 #endif
 
   counter++;
@@ -788,17 +851,17 @@ void LORA_reception()
 
     if (packetSize) 
     {
-      Serial.print("Received packet '");
+      Serial1.print("Received packet '");
 
       // Read packet
       while (LoRa.available()) 
       {
-        Serial.print((char)LoRa.read());
+        Serial1.print((char)LoRa.read());
       }
 
       // Print RSSI of packet
-      Serial.print("' with RSSI ");
-      Serial.println(LoRa.packetRssi());
+      Serial1.print("' with RSSI ");
+      Serial1.println(LoRa.packetRssi());
     }
 
     Watchdog.reset();
@@ -812,45 +875,13 @@ void LORA_reception()
 */
 void LORA_sleep_mode()
 {
+  int res = modem.sleep(true);
+  // Serial1.print("LoRa Sleep ");
+  // Serial1.println(res);
 
   // Clear module reset pin
-  pinMode(LORA_RESET, OUTPUT);
-  digitalWrite(LORA_RESET, LOW);
-
-  // int res = modem.sleep();
-  // Serial.print("LoRa Sleep ");
-  // Serial.println(res);
-
-  if (1)
-  {
-    //Serial.println("LoRa Sleep OK");
-  }
-  else
-  {
-    //Serial.println("LoRa Sleep NOT OK");
-  }
-
-}
-
-// TO BE DELETED
-void LORA_sleep_mode_bk()
-{
-  /*
+  // pinMode(LORA_RESET, OUTPUT);
   // digitalWrite(LORA_RESET, LOW);
-  // digitalWrite(LORA_BOOT0, LOW);
-  // pinMode(LORA_RESET, INPUT);
-  // pinMode(LORA_DEFAULT_SS_PIN, INPUT);
-  // pinMode(LORA_IRQ_DUMB, INPUT);
-  // pinMode(LORA_BOOT0, INPUT);
-  */
-
-  //LoRa.sleep();
-  digitalWrite(LORA_IRQ_DUMB, LOW);
-  digitalWrite(LORA_RESET, LOW);
-  digitalWrite(LORA_BOOT0, LOW);
-  pinMode(LORA_IRQ_DUMB,INPUT);
-  pinMode(LORA_RESET,INPUT);
-  pinMode(LORA_BOOT0,INPUT);
 }
 
 /*!
@@ -859,39 +890,13 @@ void LORA_sleep_mode_bk()
 */
 void LORA_wake_up()
 {
-  pinMode(LORA_RESET, OUTPUT);
-  digitalWrite(LORA_RESET, HIGH);
-  delay(50);
-
-  // pinMode(LORA_IRQ_DUMB, OUTPUT);
-  // digitalWrite(LORA_IRQ_DUMB, LOW);
-
-  // // Hardware reset
-  // pinMode(LORA_BOOT0, OUTPUT);
-  // digitalWrite(LORA_BOOT0, LOW);
+  int res = modem.sleep(false);
+  // Serial1.print("LoRa Wake ");
+  // Serial1.println(res);
 
   // pinMode(LORA_RESET, OUTPUT);
   // digitalWrite(LORA_RESET, HIGH);
-  // delay(200);
-  // digitalWrite(LORA_RESET, LOW);
-  // delay(200);
-  // digitalWrite(LORA_RESET, HIGH);
-  // delay(50);
-
+  // delay(100);
 }
 
-// ***********************************************************************
-// ****************************** Debug **********************************
-// ***********************************************************************
-
-#if DEBUG_MODE
-void debug_led()
-{
-  digitalWrite(LED_BUILTIN, HIGH);
-  Serial.print("Hello! ");
-  delay(1000);
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(1000);
-}
-#endif
-
+/*** End of file ***/

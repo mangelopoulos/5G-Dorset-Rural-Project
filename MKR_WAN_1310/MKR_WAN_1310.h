@@ -15,8 +15,8 @@
 
 // Measurements
 #define BATTERY_MONITOR 0
-#define ALT_IMU_10_V5_EN 0
-#define TF_MINI_LIDAR_EN 1
+#define ALT_IMU_10_V5_EN 1
+#define TF_MINI_LIDAR_EN 0
 
 // Debugging
 #define DEBUG_MODE 1
@@ -24,7 +24,7 @@
 #define LORA_EN 1
 
 // Configuration
-#define SAMPLE_RATE_DEFAULT_SEC 1
+#define SAMPLE_RATE_DEFAULT_SEC 3600
 #define SEP "  "
 
 // LoRa

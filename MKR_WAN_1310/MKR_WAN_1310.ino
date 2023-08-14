@@ -146,19 +146,6 @@ void setup()
 // ****************************** Main ***********************************
 // ***********************************************************************
 
-void loop_debug() 
-{  
-  Watchdog.disable(); 
-
-  digitalWrite(MOSFET_PIN, HIGH);
-  Serial1.println("HIGH");
-  delay(3000);
-
-  digitalWrite(MOSFET_PIN, HIGH);
-  Serial1.println("HIGH");
-  delay(3000);
-}
-
 void loop() 
 {
 
@@ -179,10 +166,10 @@ void loop()
 
 #if TF_MINI_LIDAR_EN
   // Get TF mini Lidar measurement
-  digitalWrite(MOSFET_PIN, LOW);
-  delay(100);
+  //digitalWrite(MOSFET_PIN, LOW);
+  //delay(100);
   TFMini_measurement();
-  digitalWrite(MOSFET_PIN, HIGH);
+  //digitalWrite(MOSFET_PIN, HIGH);
 #endif
 
 #if ALT_IMU_10_V5_EN
@@ -332,15 +319,10 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
   *strength = 0;
   *range_type = 0;
   
-  Serial1.println("A");
-
   Wire.beginTransmission(dev_address);
   Wire.write(0x01); // MSB
   Wire.write(0x02); // LSB
   Wire.write(7);    // Data length: 7 bytes for distance data
-
-
-  Serial1.println("B");
 
   int res = Wire.endTransmission(true); // TODO: false
 
@@ -353,8 +335,6 @@ boolean TFMini_get_distance(uint8_t dev_address, uint16_t *distance, uint16_t *s
     // Sensor did not ACK
     return (false);
   }
-
-  Serial1.println("C");
 
   // Request 7 bytes
   Wire.requestFrom(dev_address, (uint8_t)7); 
